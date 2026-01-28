@@ -13,6 +13,7 @@ class APDUType(IntEnum):
     UNCONFIRMED_REQ = 1
     SIMPLE_ACK = 2
     COMPLEX_ACK = 3
+    SEGMENT_ACK = 4
 
 
 class PDUFlags(IntEnum):
@@ -242,6 +243,22 @@ def _parse_read_property_multiple_response(response: bytes) -> DeviceState:
     return device_state
 
 
+def _segment_ack(invoke_id: int, sequence_number: int, window_size: int) -> bytes:
+    apdu = pack(
+        "!BBBB",
+        APDUType.SEGMENT_ACK << 4,
+        invoke_id,
+        sequence_number,
+        window_size,
+    )
+
+    bvlc = pack(
+        "!BBH", BVLC_TYPE, BVLC_FUNCTION_UNICAST, BVLC_LENGTH + len(NPDU) + len(apdu)
+    )
+
+    return bvlc + NPDU + apdu
+
+
 PRIORITY_ARRAY_PROPERTY_ID = 87  # BACnet Priority_Array property identifier
 
 
@@ -353,12 +370,7 @@ class BACnetDecoder:
                 value = self.parse_priority_array(opening_tag_number)
             else:
                 tag_number, tag_length = self.read_application_tag()
-                value = {
-                    2: self.parse_unsinged_int,
-                    4: self.parse_float,
-                    7: self.parse_string,
-                    9: self.parse_enumarated_value,
-                }[tag_number](tag_length)
+                value = self.parse_value_element(tag_number, tag_length)
 
         elif opening_tag_number == TAG_NO_PROPERTY_ACCESS_ERROR:
             self.read_bytes(PROPERTY_ACCESS_ERROR_SIZE)
@@ -370,35 +382,7 @@ class BACnetDecoder:
 
         return value
 
-    # ----------------------------
-    # Priority Array decoding
-    # ----------------------------
-
-    def parse_priority_array(self, opening_tag_number: int) -> list[Any]:
-        """
-        Decode BACnet Priority_Array payload (inside propertyValue opening/closing context tag).
-
-        The payload is a sequence of 16 application-tagged PriorityValue elements,
-        terminated by the closing context tag.
-        """
-        values: list[Any] = []
-
-        while True:
-            # stop when the next tag is the closing context tag for the propertyValue wrapper
-            tnum, tclass, tlvt = self.peek_tag()
-            if tclass == 1 and tnum == opening_tag_number and tlvt == TAG_CLOSE:
-                break
-
-            # otherwise next must be an application tag element
-            app_tag, app_len_or_val = self.read_application_tag()
-            values.append(self.parse_priority_value_element(app_tag, app_len_or_val))
-
-        return values
-
-    def parse_priority_value_element(self, tag_number: int, tag_len_or_val: int) -> Any:
-        """
-        Decode one PriorityValue element (CHOICE of application types) into Python.
-        """
+    def parse_value_element(self, tag_number: int, tag_len_or_val: int) -> Any:
         # 0 = NULL (no content)
         if tag_number == 0:
             # NULL should have no content bytes
@@ -441,6 +425,27 @@ class BACnetDecoder:
         # Fallback: unknown/unsupported element type
         raw = self.read_bytes(tag_len_or_val)
         return {"tag": tag_number, "raw": raw}
+
+    def parse_priority_array(self, opening_tag_number: int) -> list[Any]:
+        """
+        Decode BACnet Priority_Array payload (inside propertyValue opening/closing context tag).
+
+        The payload is a sequence of 16 application-tagged PriorityValue elements,
+        terminated by the closing context tag.
+        """
+        values: list[Any] = []
+
+        while True:
+            # stop when the next tag is the closing context tag for the propertyValue wrapper
+            tnum, tclass, tlvt = self.peek_tag()
+            if tclass == 1 and tnum == opening_tag_number and tlvt == TAG_CLOSE:
+                break
+
+            # otherwise next must be an application tag element
+            app_tag, app_len_or_val = self.read_application_tag()
+            values.append(self.parse_value_element(app_tag, app_len_or_val))
+
+        return values
 
     # ----------------------------
     # Primitive parsers (some improved)
@@ -571,6 +576,28 @@ class BACnetRequest(asyncio.DatagramProtocol):
         return asyncio.wait_for(self.done, timeout=timeout)
 
 
+class _BACnetSegmentedProtocol(asyncio.DatagramProtocol):
+    def __init__(self):
+        self.queue: asyncio.Queue[bytes] = asyncio.Queue()
+        self._transport: asyncio.DatagramTransport | None = None
+        self.exception: Exception | None = None
+
+    def connection_made(self, transport: asyncio.DatagramTransport):
+        self._transport = transport
+
+    def datagram_received(self, data: bytes, addr: Tuple[str, int]):
+        self.queue.put_nowait(data)
+
+    def error_received(self, exc: Exception):
+        self.exception = exc
+
+    def connection_lost(self, exc: Exception | None):
+        self.exception = exc
+
+    async def receive(self, timeout: float = 1.0) -> bytes:
+        return await asyncio.wait_for(self.queue.get(), timeout=timeout)
+
+
 class BACnetClient:
     def __init__(self, address: str, port: int = DEFAULT_BACNET_PORT):
         self.address = address
@@ -603,17 +630,83 @@ class BACnetClient:
         if DEBUG:
             print(f">>> {request.hex()}")
 
-        response = await self._send(request)
-
-        if DEBUG:
-            print(f"<<< {response.hex()}")
+        loop = asyncio.get_running_loop()
+        protocol = _BACnetSegmentedProtocol()
+        transport, _ = await loop.create_datagram_endpoint(
+            lambda: protocol, remote_addr=(self.address, self.port)
+        )
 
         try:
-            return _parse_read_property_multiple_response(response)
-        except DecodingError as exc:
-            raise DecodingError(
-                f"response decoding failed: {exc}\n{response.hex()}"
-            ) from exc
+            transport.sendto(request)
+
+            response = await protocol.receive(timeout=1.0)
+            if protocol.exception is not None:
+                raise ConnectionError from protocol.exception
+
+            if DEBUG:
+                print(f"<<< {response.hex()}")
+
+            apdu_start_index = BVLC_LENGTH + len(NPDU)
+            apdu = response[apdu_start_index:]
+            apdu_type = apdu[0] >> 4
+            segmented = apdu_type == APDUType.COMPLEX_ACK and (
+                apdu[0] & (PDUFlags.SEGMENTED_REQUEST | PDUFlags.MORE_SEGMENTS)
+            )
+
+            if segmented:
+                invoke_id = apdu[1]
+                sequence_number = apdu[2]
+                window_size = apdu[3]
+                service_choice = apdu[4]
+                data_parts = [apdu[5:]]
+                more_segments = bool(apdu[0] & PDUFlags.MORE_SEGMENTS)
+
+                transport.sendto(_segment_ack(invoke_id, sequence_number, window_size))
+
+                while more_segments:
+                    segment = await protocol.receive(timeout=1.0)
+                    apdu = segment[apdu_start_index:]
+                    apdu_type = apdu[0] >> 4
+
+                    if apdu_type != APDUType.COMPLEX_ACK:
+                        raise DecodingError(f"unsupported response type: {apdu_type}")
+
+                    if apdu[1] != invoke_id:
+                        raise DecodingError(f"unexpected invoke ID: {apdu[1]}")
+
+                    sequence_number = apdu[2]
+                    window_size = apdu[3]
+                    data_parts.append(apdu[4:])
+                    more_segments = bool(apdu[0] & PDUFlags.MORE_SEGMENTS)
+
+                    transport.sendto(
+                        _segment_ack(invoke_id, sequence_number, window_size)
+                    )
+
+                full_apdu = bytes(
+                    [
+                        APDUType.COMPLEX_ACK << 4,
+                        invoke_id,
+                        service_choice,
+                    ]
+                ) + b"".join(data_parts)
+
+                bvlc = pack(
+                    "!BBH",
+                    BVLC_TYPE,
+                    BVLC_FUNCTION_UNICAST,
+                    BVLC_LENGTH + len(NPDU) + len(full_apdu),
+                )
+                response = bvlc + NPDU + full_apdu
+
+            try:
+                return _parse_read_property_multiple_response(response)
+            except DecodingError as exc:
+                raise DecodingError(
+                    f"response decoding failed: {exc}\n{response.hex()}"
+                ) from exc
+        finally:
+            transport.close()
 
     async def write(self, device_property: DeviceProperty, value: Any):
         request = _write_property(device_property, value)
