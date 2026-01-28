@@ -1,11 +1,9 @@
 import asyncio
 import os
-import socket
 
 from enum import IntEnum
 from struct import pack, unpack
 from typing import Any, Dict, List, Optional, Tuple
-
 
 DEBUG = os.getenv("DEBUG") is not None
 
@@ -66,12 +64,14 @@ class ReadValue(IntEnum):
     DESCRIPTION = 28
     OBJECT_NAME = 77
     PRESENT_VALUE = 85
+    PRIORITY_ARRAY = 87
 
 
 class ObjectType(IntEnum):
     ANALOG_INPUT = 0
     ANALOG_OUTPUT = 1
     ANALOG_VALUE = 2
+    BINARY_INPUT = 3
     BINARY_VALUE = 5
     DEVICE = 8
     MULTI_STATE_VALUE = 19
@@ -170,7 +170,9 @@ class DeviceProperty:
 
         apdu += CtxTag(3, TAG_OPEN).pack()
 
-        if self.object_type == ObjectType.ANALOG_VALUE:
+        if value is None:
+            apdu += AppTag(0, 0).pack()
+        elif self.object_type == ObjectType.ANALOG_VALUE:
             apdu += pack("!Bf", AppTag(WriteType.Real, 4).int, value)
         elif self.object_type == ObjectType.BINARY_VALUE:
             apdu += pack("!BB", AppTag(WriteType.Enumerated, 1).int, value)
@@ -199,7 +201,9 @@ def _read_property_multiple(device_properties: List[DeviceProperty]) -> bytes:
     for dp in device_properties:
         apdu += dp.read_access_spec()
 
-    bvlc = pack("!BBH", BVLC_TYPE, BVLC_FUNCTION_UNICAST, BVLC_LENGTH + len(NPDU) + len(apdu))
+    bvlc = pack(
+        "!BBH", BVLC_TYPE, BVLC_FUNCTION_UNICAST, BVLC_LENGTH + len(NPDU) + len(apdu)
+    )
 
     return bvlc + NPDU + apdu
 
@@ -238,6 +242,9 @@ def _parse_read_property_multiple_response(response: bytes) -> DeviceState:
     return device_state
 
 
+PRIORITY_ARRAY_PROPERTY_ID = 87  # BACnet Priority_Array property identifier
+
+
 class BACnetDecoder:
     def __init__(self, data: bytes, offset: int = 0):
         self.data = data
@@ -251,9 +258,7 @@ class BACnetDecoder:
             raise DecodingError("unexpected EOF")
 
         data = self.data[self.i : self.i + n]
-
         self.i += n
-
         return data
 
     def read_byte(self) -> int:
@@ -261,56 +266,55 @@ class BACnetDecoder:
             raise DecodingError("unexpected EOF")
 
         byte = self.data[self.i]
-
         self.i += 1
-
         return byte
 
+    def peek_tag(self) -> Tuple[int, int, int]:
+        """Peek next tag without consuming it."""
+        saved = self.i
+        try:
+            return self.read_tag()
+        finally:
+            self.i = saved
+
     # read_tag returns tag number, class and type/length.
-    # class=0 -> context specific tag
-    # class=1 -> application tag
+    # NOTE: In BACnet, tag_class=0 -> application tag, tag_class=1 -> context tag
     def read_tag(self) -> Tuple[int, int, int]:
         byte = self.read_byte()
 
         tag_number = byte >> 4
-        tag_class = byte >> 3 & 1
+        tag_class = (byte >> 3) & 1
         tag_type_length = byte & 7
 
+        # extended length (basic form only; your existing code)
         if tag_type_length == 5:
             tag_type_length = self.read_byte()
 
         return tag_number, tag_class, tag_type_length
 
-    # read_context_tag returns tag number and type/length for a context specific tag
     def read_context_tag(self) -> Tuple[int, int]:
         tag_number, tag_class, tag_type_length = self.read_tag()
         if tag_class != 1:
             raise DecodingError(f"expected context specific tag, got {tag_class}")
-
         return tag_number, tag_type_length
 
-    # read_application_tag returns tag number and type/length for an application tag
     def read_application_tag(self) -> Tuple[int, int]:
         tag_number, tag_class, tag_type_length = self.read_tag()
         if tag_class != 0:
             raise DecodingError(f"expected application tag, got {tag_class}")
-
         return tag_number, tag_type_length
 
-    def parse_object_identifier(self) -> Tuple[ObjectType, int]:
+    def parse_object_identifier(self) -> Tuple["ObjectType", int]:
         tag_number, tag_length = self.read_context_tag()
-
         if tag_number != 0:
             raise DecodingError("unexpected tag")
 
         data = unpack("!I", self.read_bytes(tag_length))[0]
-
         object_type = ObjectType(data >> TAG_OBJECT_TYPE_SHIFT)
         instance_number = data & 0x3FFFFF
-
         return object_type, instance_number
 
-    def parse_list_of_results(self) -> ObjectProperties:
+    def parse_list_of_results(self) -> "ObjectProperties":
         opening_tag_number, tag_type = self.read_context_tag()
         if tag_type != TAG_OPEN:
             raise DecodingError("expected opening tag")
@@ -325,17 +329,17 @@ class BACnetDecoder:
             if tag_number != 2:
                 raise DecodingError("unexpected tag")
 
-            data = self.read_byte()
+            prop_id = self.read_byte()
+            read_value = ReadValue(prop_id)
 
-            read_value = ReadValue(data)
-
-            value = self.read_value()
+            # pass property id so read_value can decode Priority_Array specially
+            value = self.read_value(property_id=prop_id)
 
             results.append((read_value, value))
 
         return results
 
-    def read_value(self) -> Any:
+    def read_value(self, property_id: int | None = None) -> Any:
         # check the opening tag
         opening_tag_number, tag_type = self.read_context_tag()
         if tag_type != TAG_OPEN:
@@ -344,14 +348,18 @@ class BACnetDecoder:
         value: Any = 0
 
         if opening_tag_number == TAG_NO_PROPERTY_VALUE:
-            tag_number, tag_length = self.read_application_tag()
+            # Priority_Array (87) is an array of 16 PriorityValue elements
+            if property_id == PRIORITY_ARRAY_PROPERTY_ID:
+                value = self.parse_priority_array(opening_tag_number)
+            else:
+                tag_number, tag_length = self.read_application_tag()
+                value = {
+                    2: self.parse_unsinged_int,
+                    4: self.parse_float,
+                    7: self.parse_string,
+                    9: self.parse_enumarated_value,
+                }[tag_number](tag_length)
 
-            value = {
-                2: self.parse_unsinged_int,
-                4: self.parse_float,
-                7: self.parse_string,
-                9: self.parse_enumarated_value,
-            }[tag_number](tag_length)
         elif opening_tag_number == TAG_NO_PROPERTY_ACCESS_ERROR:
             self.read_bytes(PROPERTY_ACCESS_ERROR_SIZE)
 
@@ -362,30 +370,126 @@ class BACnetDecoder:
 
         return value
 
+    # ----------------------------
+    # Priority Array decoding
+    # ----------------------------
+
+    def parse_priority_array(self, opening_tag_number: int) -> list[Any]:
+        """
+        Decode BACnet Priority_Array payload (inside propertyValue opening/closing context tag).
+
+        The payload is a sequence of 16 application-tagged PriorityValue elements,
+        terminated by the closing context tag.
+        """
+        values: list[Any] = []
+
+        while True:
+            # stop when the next tag is the closing context tag for the propertyValue wrapper
+            tnum, tclass, tlvt = self.peek_tag()
+            if tclass == 1 and tnum == opening_tag_number and tlvt == TAG_CLOSE:
+                break
+
+            # otherwise next must be an application tag element
+            app_tag, app_len_or_val = self.read_application_tag()
+            values.append(self.parse_priority_value_element(app_tag, app_len_or_val))
+
+        return values
+
+    def parse_priority_value_element(self, tag_number: int, tag_len_or_val: int) -> Any:
+        """
+        Decode one PriorityValue element (CHOICE of application types) into Python.
+        """
+        # 0 = NULL (no content)
+        if tag_number == 0:
+            # NULL should have no content bytes
+            if tag_len_or_val:
+                self.read_bytes(tag_len_or_val)
+            return None
+
+        # 1 = BOOLEAN: boolean value is encoded in the LVT bits (0/1), no content bytes
+        if tag_number == 1:
+            return bool(tag_len_or_val)
+
+        # 2 = Unsigned Integer
+        if tag_number == 2:
+            return self.parse_unsinged_int(tag_len_or_val)
+
+        # 3 = Signed Integer (2's complement)
+        if tag_number == 3:
+            return self.parse_signed_int(tag_len_or_val)
+
+        # 4 = Real (IEEE-754 float)
+        if tag_number == 4:
+            return self.parse_float(tag_len_or_val)
+
+        # 5 = Double (IEEE-754 double)
+        if tag_number == 5:
+            return self.parse_double(tag_len_or_val)
+
+        # 7 = Character String
+        if tag_number == 7:
+            return self.parse_string(tag_len_or_val)
+
+        # 9 = Enumerated
+        if tag_number == 9:
+            return self.parse_enumarated_value(tag_len_or_val)
+
+        # 12 = Object Identifier (application-tagged)
+        if tag_number == 12:
+            return self.parse_application_object_identifier(tag_len_or_val)
+
+        # Fallback: unknown/unsupported element type
+        raw = self.read_bytes(tag_len_or_val)
+        return {"tag": tag_number, "raw": raw}
+
+    # ----------------------------
+    # Primitive parsers (some improved)
+    # ----------------------------
+
     def parse_enumarated_value(self, length: int) -> int:
-        return self.read_byte()
+        # enumerated can be 1..4 bytes; decode big-endian like unsigned
+        value = 0
+        for _ in range(length):
+            value = (value << 8) | self.read_byte()
+        return value
 
     def parse_unsinged_int(self, length: int) -> int:
         value = 0
-        for i in range(length):
-            value <<= 8
-            value |= self.read_byte()
-
+        for _ in range(length):
+            value = (value << 8) | self.read_byte()
         return value
+
+    def parse_signed_int(self, length: int) -> int:
+        # big-endian two's complement
+        raw = int.from_bytes(self.read_bytes(length), byteorder="big", signed=False)
+        sign_bit = 1 << (length * 8 - 1)
+        return raw - (1 << (length * 8)) if (raw & sign_bit) else raw
 
     def parse_float(self, length: int) -> float:
         if length != 4:
             raise DecodingError(f"unsupported float size: {length}")
-
         return unpack("!f", self.read_bytes(length))[0]
+
+    def parse_double(self, length: int) -> float:
+        if length != 8:
+            raise DecodingError(f"unsupported double size: {length}")
+        return unpack("!d", self.read_bytes(length))[0]
 
     def parse_string(self, length: int) -> str:
         encoding = self.read_byte()
-
         if encoding != 0:
             raise DecodingError(f"unsupported encoding: {encoding}")
-
         return self.read_bytes(length - 1).decode("utf-8")
+
+    def parse_application_object_identifier(
+        self, length: int
+    ) -> Tuple["ObjectType", int]:
+        if length != 4:
+            raise DecodingError(f"unsupported object identifier size: {length}")
+        data = unpack("!I", self.read_bytes(length))[0]
+        object_type = ObjectType(data >> TAG_OBJECT_TYPE_SHIFT)
+        instance_number = data & 0x3FFFFF
+        return object_type, instance_number
 
 
 def _write_property(device_property: DeviceProperty, value: Any) -> bytes:
@@ -399,7 +503,9 @@ def _write_property(device_property: DeviceProperty, value: Any) -> bytes:
 
     apdu += device_property.write_access_spec(value)
 
-    bvlc = pack("!BBH", BVLC_TYPE, BVLC_FUNCTION_UNICAST, BVLC_LENGTH + len(NPDU) + len(apdu))
+    bvlc = pack(
+        "!BBH", BVLC_TYPE, BVLC_FUNCTION_UNICAST, BVLC_LENGTH + len(NPDU) + len(apdu)
+    )
 
     return bvlc + NPDU + apdu
 
@@ -429,16 +535,16 @@ def _parse_write_property_response(response: bytes):
 DEFAULT_BACNET_PORT = 47808
 
 
-class BACnetRequest:
+class BACnetRequest(asyncio.DatagramProtocol):
     _transport: asyncio.DatagramTransport
 
     # response is the response payload
     response: bytes
 
     # exception is the exception that occurred during the request
-    exception: Exception
+    exception: Exception | None
 
-    def __init__(self, request: bytes, done: asyncio.Future = None):
+    def __init__(self, request: bytes, done: asyncio.Future | None = None):
         self.request = request
 
         if done is None:
@@ -450,15 +556,15 @@ class BACnetRequest:
         self._transport = transport
         self._transport.sendto(self.request)
 
-    def datagram_received(self, response: bytes, addr: Tuple[str, int]):
-        self.response = response
+    def datagram_received(self, data: bytes, addr: Tuple[str, int]):
+        self.response = data
         self._transport.close()
 
-    def error_received(self, exception: Exception):
-        self.exception = exception
+    def error_received(self, exc: Exception):
+        self.exception = exc
 
-    def connection_lost(self, exception: Exception):
-        self.exception = exception
+    def connection_lost(self, exc: Exception | None):
+        self.exception = exc
         self.done.set_result(True)
 
     def wait(self, timeout: float = 1.0):
@@ -520,134 +626,3 @@ class BACnetClient:
             raise DecodingError(
                 f"response decoding failed: {exc}\n{response.hex()}"
             ) from exc
-
-
-# Flexit uses a proprietary service defined by Siemens to discover devices on the local network.
-VENDOR_ID_SIEMENS = 7
-SERVICE_NUMBER_DISCOVERY = 515
-SERVICE_NUMBER_IDENTIFICATION = 516
-
-# As I cannot find the specification for the service parameters,
-# will use what I've captured them from the Flexit app using Wireshark.
-# It seems to contain a UUID and some other "random" value,
-# but will use a fixed value for now and worry about it if anyone ever complains.
-DISCOVERY_SERVICE_PARAMETERS = (
-        b"\x80\x01\x00\x04\x00\x00\x00\x08\x64\x69\x73\x63\x6f\x76\x65\x72" +
-        b"\x00\x00\x00\x00\x0c\x00\x01\x0b\x00\x01\x00\x00\x00\x00\x0b\x00" +
-        b"\x02\x00\x00\x00\x2e\x41\x42\x54\x4d\x6f\x62\x69\x6c\x65\x3a\x38" +
-        b"\x34\x33\x30\x33\x64\x32\x64\x2d\x30\x34\x39\x37\x2d\x34\x65\x33" +
-        b"\x62\x2d\x62\x63\x38\x31\x2d\x37\x65\x36\x65\x62\x62\x31\x31\x65" +
-        b"\x64\x62\x38\x0b\x00\x03\x00\x00\x00\x0c\x3f\x44\x65\x76\x69\x63" +
-        b"\x65\x73\x3d\x41\x6c\x6c\x00\x00")
-
-
-def _discovery_request() -> bytes:
-    """Build a discovery request."""
-
-    # start APDU for unconfirmed private transfer
-    apdu = pack("!BB",
-                APDUType.UNCONFIRMED_REQ << 4,
-                UnconfirmedServiceChoice.UNCONFIRMED_PRIVATE_TRANSFER)
-
-    # set vendor ID and service number
-    apdu += pack("!BBBH",
-                 CtxTag(0, 1).int, VENDOR_ID_SIEMENS,
-                 CtxTag(1, 2).int, SERVICE_NUMBER_DISCOVERY)
-
-    # set the service parameters
-    apdu += CtxTag(2, TAG_OPEN).pack()
-    apdu += DISCOVERY_SERVICE_PARAMETERS
-    apdu += CtxTag(2, TAG_CLOSE).pack()
-
-    # set custom npdu and bvlc
-    npdu = pack("!BB", NPDU_VERSION, 0)  # don't expect reply
-    bvlc = pack("!BBH", BVLC_TYPE, BVLC_FUNCTION_BROADCAST, BVLC_LENGTH + len(npdu) + len(apdu))
-
-    return bvlc + npdu + apdu
-
-
-def _is_discovery_response(response: bytes) -> bool:
-    """Check if the response is a discovery response."""
-    if len(response) < 32:
-        return False
-
-    bvlc_type, bvlc_function, _ = unpack("!BBH", response[0:4])
-    if bvlc_type != BVLC_TYPE or bvlc_function != BVLC_FUNCTION_BROADCAST:
-        return False
-
-    apdu_start_index = BVLC_LENGTH + len(NPDU)
-    apdu = response[apdu_start_index:]
-
-    apdu_type = apdu[0] >> 4
-
-    if apdu_type != APDUType.UNCONFIRMED_REQ:
-        return False
-
-    decoder = BACnetDecoder(apdu, 2)
-
-    if decoder.read_context_tag() != (0, 1):
-        return False
-
-    if decoder.read_byte() != VENDOR_ID_SIEMENS:
-        return False
-
-    if decoder.read_context_tag() != (1, 2):
-        return False
-
-    if decoder.parse_unsinged_int(2) != SERVICE_NUMBER_IDENTIFICATION:
-        return False
-
-    return True
-
-
-async def _receive_identification_responses(sock: socket.socket, response_ips: set):
-    while True:
-        try:
-            data, addr = sock.recvfrom(1024)
-            if _is_discovery_response(data):
-                response_ips.add(addr[0])
-        except BlockingIOError:
-            await asyncio.sleep(0.1)  # Wait briefly to avoid busy loop
-            continue
-        except Exception as e:
-            print(f"Error receiving data: {e}")
-            break
-
-
-BROADCAST_ADDRESS = "255.255.255.255"
-
-
-async def _send_discovery_request(sock: socket.socket):
-    while True:
-        sock.sendto(_discovery_request(), (BROADCAST_ADDRESS, DEFAULT_BACNET_PORT))
-        await asyncio.sleep(0.1)  # Slight delay between sends
-
-
-async def discover(timeout: float = 2.0) -> List[str]:
-    """
-    Discover devices on the local network.
-
-    Returns a list of IP addresses.
-    """
-    response_ips = set()
-
-    # Create a UDP socket
-    with socket.socket(socket.AF_INET, socket.SOCK_DGRAM, socket.IPPROTO_UDP) as sock:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_BROADCAST, 1)
-        sock.bind(('', DEFAULT_BACNET_PORT))
-        sock.setblocking(False)
-
-        # Run sending and receiving tasks concurrently
-        try:
-            receiver = asyncio.create_task(_receive_identification_responses(sock, response_ips))
-            sender = asyncio.create_task(_send_discovery_request(sock))
-
-            # Wait a bit, so we can collect all device responses
-            await asyncio.sleep(timeout)
-        finally:
-            # cancel the receiver task
-            receiver.cancel()
-            sender.cancel()
-
-    return list(response_ips)
