@@ -80,6 +80,8 @@ from .const import (
     ROOM_AIR_QUALITY_INDICATION,
 )
 
+PRECISION = 3
+
 
 class SiemensBACnet:
     def __init__(
@@ -149,7 +151,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(PRESENT_HEATING_SETPOINT, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -164,7 +166,9 @@ class SiemensBACnet:
     @property
     def floor_pump_position(self) -> float:
         """Outside air temperature in degrees Celsius, e.g. 14.3."""
-        return float(round(self._get_value(PUMP_POSITION, ReadValue.PRESENT_VALUE), 1))
+        return float(
+            round(self._get_value(PUMP_POSITION, ReadValue.PRESENT_VALUE), PRECISION)
+        )
 
     @property
     def floor_pump_position_priorities(self) -> list[Any]:
@@ -174,7 +178,9 @@ class SiemensBACnet:
     @property
     def built_in_room_air_temperature_sensor(self) -> float:
         return float(
-            round(self._get_value(TEMPERATURE_SENSOR, ReadValue.PRESENT_VALUE), 1)
+            round(
+                self._get_value(TEMPERATURE_SENSOR, ReadValue.PRESENT_VALUE), PRECISION
+            )
         )
 
     @property
@@ -185,7 +191,7 @@ class SiemensBACnet:
                     BUILT_IN_ROOM_AIR_RELATIVE_HUMIDITY_SENSOR,
                     ReadValue.PRESENT_VALUE,
                 ),
-                1,
+                PRECISION,
             )
         )
 
@@ -196,14 +202,16 @@ class SiemensBACnet:
                 self._get_value(
                     AUTOMATION_STATION_DIAGNOSTICS, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
     @property
     def io_bus_diagnostics(self) -> float:
         return float(
-            round(self._get_value(IO_BUS_DIAGNOSTICS, ReadValue.PRESENT_VALUE), 1)
+            round(
+                self._get_value(IO_BUS_DIAGNOSTICS, ReadValue.PRESENT_VALUE), PRECISION
+            )
         )
 
     @property
@@ -211,7 +219,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(ROOM_TEMPERATURE_RESULT, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -222,7 +230,7 @@ class SiemensBACnet:
                 self._get_value(
                     PRESENT_HEATING_SETPOINT_COMFORT, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
@@ -233,7 +241,7 @@ class SiemensBACnet:
                 self._get_value(
                     PRESENT_HEATING_SETPOINT_ECONOMY, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
@@ -244,7 +252,7 @@ class SiemensBACnet:
                 self._get_value(
                     PRESENT_HEATING_SETPOINT_UNOCCUPIED, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
@@ -255,7 +263,7 @@ class SiemensBACnet:
                 self._get_value(
                     PRESENT_HEATING_SETPOINT_PROTECTION, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
@@ -264,7 +272,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(HEATING_SETPOINT_COMFORT, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -280,7 +288,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(HEATING_SETPOINT_ECONOMY, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -289,7 +297,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(HEATING_SETPOINT_UNOCCUPIED, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -298,7 +306,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(HEATING_SETPOINT_PROTECTION, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -307,7 +315,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(ROOM_TEMPERATURE_SETPOINT, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -325,7 +333,7 @@ class SiemensBACnet:
                 self._get_value(
                     ROOM_TEMPERATURE_SETPOINT_SHIFT, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
@@ -343,14 +351,14 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(ROOM_RELATIVE_HUMIDITY, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
     @property
     def room_temperature(self) -> float:
         return float(
-            round(self._get_value(ROOM_TEMPERATURE, ReadValue.PRESENT_VALUE), 1)
+            round(self._get_value(ROOM_TEMPERATURE, ReadValue.PRESENT_VALUE), PRECISION)
         )
 
     @property
@@ -358,7 +366,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(FLOOR_HEATING_REQUEST, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -369,7 +377,7 @@ class SiemensBACnet:
                 self._get_value(
                     FLOOR_HEATING_PUMP_POSITION_VALUE, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
@@ -387,7 +395,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(EFFECTIVE_ROOM_TEMPERATURE, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -398,20 +406,23 @@ class SiemensBACnet:
                 self._get_value(
                     EFFECTIVE_OUTSIDE_AIR_TEMPERATURE, ReadValue.PRESENT_VALUE
                 ),
-                1,
+                PRECISION,
             )
         )
 
     @property
     def max_heating_setpoint(self) -> float:
         return float(
-            round(self._get_value(MAX_HEATING_SETPOINT, ReadValue.PRESENT_VALUE), 1)
+            round(
+                self._get_value(MAX_HEATING_SETPOINT, ReadValue.PRESENT_VALUE),
+                PRECISION,
+            )
         )
 
     @property
     def warm_up_gradient(self) -> float:
         return float(
-            round(self._get_value(WARM_UP_GRADIENT, ReadValue.PRESENT_VALUE), 1)
+            round(self._get_value(WARM_UP_GRADIENT, ReadValue.PRESENT_VALUE), PRECISION)
         )
 
     @property
@@ -422,14 +433,14 @@ class SiemensBACnet:
                     BUILT_IN_TEMPERATURE_SENSOR_ADJUSTMENT,
                     ReadValue.PRESENT_VALUE,
                 ),
-                1,
+                PRECISION,
             )
         )
 
     @property
     def room_air_quality(self) -> float:
         return float(
-            round(self._get_value(ROOM_AIR_QUALITY, ReadValue.PRESENT_VALUE), 1)
+            round(self._get_value(ROOM_AIR_QUALITY, ReadValue.PRESENT_VALUE), PRECISION)
         )
 
     @property
@@ -437,7 +448,7 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(ROOM_AIR_QUALITY_RESULT, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
@@ -446,14 +457,16 @@ class SiemensBACnet:
         return float(
             round(
                 self._get_value(ROOM_RELATIVE_HUMIDITY_RESULT, ReadValue.PRESENT_VALUE),
-                1,
+                PRECISION,
             )
         )
 
     @property
     def application_number(self) -> float:
         return float(
-            round(self._get_value(APPLICATION_NUMBER, ReadValue.PRESENT_VALUE), 1)
+            round(
+                self._get_value(APPLICATION_NUMBER, ReadValue.PRESENT_VALUE), PRECISION
+            )
         )
 
     @property
