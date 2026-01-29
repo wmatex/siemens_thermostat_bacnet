@@ -106,11 +106,8 @@ class SiemensBACnet:
         """Refresh local device state."""
         device_properties = DEVICE_PROPERTIES + [self._device_property]
         state: DeviceState = {}
-        chunk_size = 20
 
-        for i in range(0, len(device_properties), chunk_size):
-            chunk = device_properties[i : i + chunk_size]
-            state.update(await self.bacnet.read_multiple(chunk))
+        state.update(await self.bacnet.read_multiple(device_properties))
 
         self._state = state
 

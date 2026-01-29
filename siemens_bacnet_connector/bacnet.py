@@ -441,7 +441,24 @@ class BACnetDecoder:
             if tclass == 1 and tnum == opening_tag_number and tlvt == TAG_CLOSE:
                 break
 
-            # otherwise next must be an application tag element
+            if tclass == 1:
+                ctx_tag, ctx_len = self.read_context_tag()
+                if ctx_len == TAG_OPEN:
+                    app_tag, app_len_or_val = self.read_application_tag()
+                    values.append(self.parse_value_element(app_tag, app_len_or_val))
+                    tnum_next, tclass_next, tlvt_next = self.peek_tag()
+                    if (
+                        tclass_next == 1
+                        and tnum_next == ctx_tag
+                        and tlvt_next == TAG_CLOSE
+                    ):
+                        closing_tag, closing_type = self.read_context_tag()
+                        if closing_tag != ctx_tag or closing_type != TAG_CLOSE:
+                            raise DecodingError("expected closing tag")
+                else:
+                    self.read_bytes(ctx_len)
+                continue
+
             app_tag, app_len_or_val = self.read_application_tag()
             values.append(self.parse_value_element(app_tag, app_len_or_val))
 
