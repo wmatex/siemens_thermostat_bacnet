@@ -1,7 +1,7 @@
 import asyncio
 import sys
 
-from siemens_bacnet import SiemensBACnet
+from siemens_bacnet_connector import SiemensBACnet
 
 
 async def main():
