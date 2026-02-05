@@ -143,9 +143,14 @@ class SiemensBACnet:
     @property
     def serial_number(self) -> str:
         """Return device's serial number, e.g.: 800220-000000."""
-        serial_number = self._get_value(self._device_property, ReadValue.DESCRIPTION)
+        serial_number = self._get_value(self._device_property, ReadValue.SERIAL_NUMBER)
 
         return serial_number
+
+    @property
+    def model_name(self) -> str:
+        """Return device model name, e.g.: XYZ123"""
+        return self._get_value(self._device_property, ReadValue.MODEL_NAME)
 
     @property
     def heating_setpoint(self) -> float:
