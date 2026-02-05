@@ -12,6 +12,7 @@ PRESENT_HEATING_SETPOINT = DeviceProperty(
     ObjectType.ANALOG_VALUE,
     122,
     read_values=[ReadValue.PRESENT_VALUE, ReadValue.PRIORITY_ARRAY],
+    priority=15,
 )
 BUILT_IN_ROOM_AIR_RELATIVE_HUMIDITY_SENSOR = DeviceProperty(ObjectType.ANALOG_INPUT, 1)
 AUTOMATION_STATION_DIAGNOSTICS = DeviceProperty(ObjectType.ANALOG_VALUE, 0)
@@ -25,6 +26,7 @@ HEATING_SETPOINT_COMFORT = DeviceProperty(
     ObjectType.ANALOG_VALUE,
     127,
     read_values=[ReadValue.PRESENT_VALUE, ReadValue.PRIORITY_ARRAY],
+    priority=16,
 )
 HEATING_SETPOINT_ECONOMY = DeviceProperty(ObjectType.ANALOG_VALUE, 128)
 HEATING_SETPOINT_UNOCCUPIED = DeviceProperty(ObjectType.ANALOG_VALUE, 129)
@@ -33,11 +35,13 @@ ROOM_TEMPERATURE_SETPOINT = DeviceProperty(
     ObjectType.ANALOG_VALUE,
     131,
     read_values=[ReadValue.PRESENT_VALUE, ReadValue.PRIORITY_ARRAY],
+    priority=15,
 )
 ROOM_TEMPERATURE_SETPOINT_SHIFT = DeviceProperty(
     ObjectType.ANALOG_VALUE,
     132,
     read_values=[ReadValue.PRESENT_VALUE, ReadValue.PRIORITY_ARRAY],
+    priority=13,
 )
 ROOM_RELATIVE_HUMIDITY = DeviceProperty(ObjectType.ANALOG_VALUE, 133)
 ROOM_TEMPERATURE = DeviceProperty(ObjectType.ANALOG_VALUE, 134)

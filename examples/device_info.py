@@ -13,12 +13,15 @@ async def main():
 
     # create a SiemensBACnet device instance with the IP address and Device ID
     device = SiemensBACnet(device_address, 4194303)
+    # await device.set_heating_setpoint_comfort(None)
+    # await device.set_room_temperature_setpoint_shift(None)
 
     await device.update()
 
     # check device name and s/n
     print(f"Device Name: {device.device_name}")
     print(f"Serial Number: {device.serial_number}")
+    print(f"Device Model: {device.model_name}")
     print(
         f"Built-in room air temperature sensor: {device.built_in_room_air_temperature_sensor}"
     )

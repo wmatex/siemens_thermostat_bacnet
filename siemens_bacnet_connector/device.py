@@ -99,7 +99,11 @@ class SiemensBACnet:
         return DeviceProperty(
             ObjectType.DEVICE,
             self.device_id,
-            read_values=[ReadValue.OBJECT_NAME, ReadValue.DESCRIPTION],
+            read_values=[
+                ReadValue.OBJECT_NAME,
+                ReadValue.SERIAL_NUMBER,
+                ReadValue.MODEL_NAME,
+            ],
         )
 
     async def update(self) -> None:

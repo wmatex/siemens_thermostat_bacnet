@@ -3,7 +3,7 @@ import os
 
 from enum import IntEnum
 from struct import pack, unpack
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 DEBUG = os.getenv("DEBUG") is not None
 
@@ -66,6 +66,8 @@ class ReadValue(IntEnum):
     OBJECT_NAME = 77
     PRESENT_VALUE = 85
     PRIORITY_ARRAY = 87
+    SERIAL_NUMBER = 372
+    MODEL_NAME = 70
 
 
 class ObjectType(IntEnum):
@@ -82,8 +84,8 @@ class ObjectType(IntEnum):
 # ObjectIdentifier tuple represents ObjectType and InstanceIdentifier
 ObjectIdentifier = Tuple[ObjectType, int]
 
-# ObjectProperties represents a map of ReadValue to the actual value
-ObjectProperties = List[Tuple[ReadValue, Any]]
+# ObjectProperties represents a map of ReadValue (or raw property id) to the actual value
+ObjectProperties = List[Tuple[Union[ReadValue, int], Any]]
 
 DeviceState = Dict[ObjectIdentifier, ObjectProperties]
 
@@ -156,7 +158,7 @@ class DeviceProperty:
         apdu += CtxTag(1, TAG_OPEN).pack()
 
         for read_value in self.read_values:
-            apdu += pack("!BB", CtxTag(0, 1).int, read_value)
+            apdu += _encode_unsigned_ctx_tag(0, read_value)
 
         apdu += CtxTag(1, TAG_CLOSE).pack()
 
@@ -207,6 +209,22 @@ def _read_property_multiple(device_properties: List[DeviceProperty]) -> bytes:
     )
 
     return bvlc + NPDU + apdu
+
+
+def _encode_unsigned_ctx_tag(tag_number: int, value: int) -> bytes:
+    if value < 0 or value > 0xFFFFFFFF:
+        raise ValueError(f"value out of range: {value}")
+
+    if value <= 0xFF:
+        length = 1
+    elif value <= 0xFFFF:
+        length = 2
+    elif value <= 0xFFFFFF:
+        length = 3
+    else:
+        length = 4
+
+    return CtxTag(tag_number, length).pack() + value.to_bytes(length, "big")
 
 
 # _parse_read_property_multiple_response and return DeviceState
@@ -346,8 +364,16 @@ class BACnetDecoder:
             if tag_number != 2:
                 raise DecodingError("unexpected tag")
 
-            prop_id = self.read_byte()
-            read_value = ReadValue(prop_id)
+            prop_id = int.from_bytes(self.read_bytes(tag_type), "big")
+            try:
+                read_value: Union[ReadValue, int] = ReadValue(prop_id)
+            except ValueError:
+                read_value = prop_id
+
+            tag_number, tag_class, tag_type = self.peek_tag()
+            if tag_class == 1 and tag_number == 3:
+                _, tag_length = self.read_context_tag()
+                self.read_bytes(tag_length)
 
             # pass property id so read_value can decode Priority_Array specially
             value = self.read_value(property_id=prop_id)
