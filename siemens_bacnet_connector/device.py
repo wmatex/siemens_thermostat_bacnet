@@ -169,8 +169,18 @@ class SiemensBACnet:
         return self._get_value(PRESENT_HEATING_SETPOINT, ReadValue.PRIORITY_ARRAY)
 
     async def set_heating_setpoint(self, temp: float | None) -> None:
-        """Set heating setpoint temperature in degrees Celsius."""
-        await self._set_value(PRESENT_HEATING_SETPOINT, temp)
+        """Set heating setpoint temperature in degrees Celsius.
+
+        The present setpoint is computed by the thermostat, so the change is written
+        as a setpoint shift, the same way the physical dial and the mobile app do it.
+        The last writer wins. None relinquishes the shift.
+        """
+        if temp is not None:
+            temp = round(
+                self.room_temperature_setpoint_shift + temp - self.heating_setpoint,
+                PRECISION,
+            )
+        await self._set_value(ROOM_TEMPERATURE_SETPOINT_SHIFT, temp)
 
     @property
     def floor_pump_position(self) -> float:

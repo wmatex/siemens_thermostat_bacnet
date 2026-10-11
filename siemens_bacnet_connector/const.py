@@ -12,7 +12,6 @@ PRESENT_HEATING_SETPOINT = DeviceProperty(
     ObjectType.ANALOG_VALUE,
     122,
     read_values=[ReadValue.PRESENT_VALUE, ReadValue.PRIORITY_ARRAY],
-    priority=15,
 )
 BUILT_IN_ROOM_AIR_RELATIVE_HUMIDITY_SENSOR = DeviceProperty(ObjectType.ANALOG_INPUT, 1)
 AUTOMATION_STATION_DIAGNOSTICS = DeviceProperty(ObjectType.ANALOG_VALUE, 0)
